@@ -10,7 +10,6 @@ from typing import Literal
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.animation import FuncAnimation
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk) # type: ignore
 import os
 import numpy as np
@@ -77,7 +76,7 @@ UNITS: dict[str, float] = {
 # column names
 #TEMP_STEP_COLUMNS=("Step #", "Time [min]", f"Set Temp. [{CHAR_DEGC}]")
 FREQ_STEP_COLUMNS=("Step #", "Frequency [Hz]", "*")
-TEST_DATA_COLUMNS=("Probe #", f"Temp. [{CHAR_DEGC}]","Freq. [Hz]","Cp [F]","Df [1]")
+TEST_DATA_COLUMNS=("Probe #", f"Temp. [{CHAR_DEGC}]","Freq. [Hz]","Cp [F]","Df [1]", f"ESR [{CHAR_OHM}]") #add esr
 TEMPERATURE_READINGS_COLUMNS=('Time [s]','Cycle','Mode',f'Set Temp [{CHAR_DEGC}]',f'Chamber Temp [{CHAR_DEGC}]',f'User Temp [{CHAR_DEGC}]')
 TEMP_PLAN_COLUMNS=("Step #", "Target Temp. [°C]", "Dwell Time [min]", "Ramp Time [min]", "Elapsed Time [min]")
 
@@ -149,10 +148,11 @@ class Table(ttk.Treeview):
     
     # sets the column widths and headings based on the given lists
     def set_headings(self, column_list, width_list):
-        self.column('#0', width=0, stretch=False)
+        self.column('#0', width=0, stretch=True)
         self.heading('#0', text="", anchor='w')
         for i, col in enumerate(column_list):
-            self.column(col, minwidth=width_list[i], width=width_list[i], stretch=False, anchor='w')
+            width = width_list[i] if i < len(width_list) else 80
+            self.column(col, minwidth=50, width=width, stretch=False, anchor='w')
             self.heading(col, text=col, anchor='w')
     
     # updates the whole table based on the given dataframe, with alternating row colors
@@ -237,100 +237,143 @@ class TempStepPlot:
         ax.plot(times, temps, marker='o', linestyle='-')
         self.plot_canvas.draw()
 
-# makes the test data plots, updates them, and draws them on the canvas when called
+# remade this to include esr plots and handle general vs frequency and vs temperature plots
 class TestDataPlot:
-    master:             tk.Tk
-    plot_figure:        Figure
-    plot_canvas:        FigureCanvasTkAgg
-    toolbar:            NavigationToolbar2Tk
-    capacitance_axes:   Axes
-    dissipation_axes:   Axes
-    # probes:             ListVar
-    frequencies:        ListVar
-    capacitance_data:   ListVar
-    # capacitance2_data:  ListVar
-    # capacitance3_data:  ListVar
-    # capacitance4_data:  ListVar
-    dissipation_data:   ListVar
-    # dissipation2_data:  ListVar
-    # dissipation3_data:  ListVar
-    # dissipation4_data:  ListVar
-    widget:             tk.Canvas
-    config_job:         str
-    visible:            bool
-    
-    def __init__(self, master_window):
-        self.master = master_window
-        self.plot_figure = Figure(figsize=(5, 4), dpi=80, layout='constrained')
-        self.plot_canvas = FigureCanvasTkAgg(self.plot_figure, master_window)
-        self.plot_figure.patch.set_facecolor('#F0F0F0')
-        self.widget = self.plot_canvas.get_tk_widget()
-        self.visible = True
-        self.config_job = ''
-        (self.capacitance_axes, self.dissipation_axes) = self.plot_figure.subplots(2,1)
-        self.frequencies = ListVar('float', "Frequencies")
-        # self.frequencies.trace_add("write", self.update_plots)
-        self.capacitance_data = ListVar('float', "Capacitance")
-        # self.capacitance_data.trace_add("write", self.update_capacitance)
-        self.dissipation_data = ListVar('float', "Dissipation")
-        # self.dissipation_data.trace_add("write", self.update_dissipation)
-        # separator = ttk.Separator(master_window, orient="horizontal")
-        # separator.pack(side="bottom", fill="x", expand=True, padx=10, pady=10)
-        self.toolbar = NavigationToolbar2Tk(self.plot_canvas, master_window, pack_toolbar=True)
-        self.toolbar.update()
+        def __init__(self, master_window):
+            self.master = master_window
+            self.notebook = ttk.Notebook(master_window)
+            self.widget = self.notebook
+
+            self.figures ={}
+            self.canvases = {}
+            self.axes = {}
+
+            self.build_tab(
+                "frequency",
+                "Versus Frequency",
+                [ 
+                    ("Capacitance vs Frequency", 'Frequency [Hz]', 'Cp [F]'),
+                    ("Dissipation vs Frequency", 'Frequency [Hz]', 'Df [1]'),
+                    ("ESR vs Frequency", 'Frequency [Hz]', f"ESR [{CHAR_OHM}]"),
+                ],
+            )
+            self.build_tab(
+                "temperature",
+                "Versus Temperature",
+                [ 
+                    ("Capacitance vs Temperature", 'Temperature [°C]', 'Cp [F]'),
+                    ("Dissipation vs Temperature", 'Temperature [°C]', 'Df [1]'),
+                    ("ESR vs Temperature", 'Temperature [°C]', f"ESR [{CHAR_OHM}]"),
+                ],
+            )
+
+        def build_tab(self, tab_key, tab_title, plot_specs):
+            frame = tk.Frame(self.notebook)
+            self.notebook.add(frame, text=tab_title)
+            fig = Figure(figsize = (6,7), dpi = 80, layout="constrained")
+            fig.patch.set_facecolor('#F0F0F0')
+            axes = fig.subplots(3,1)
+
+            canvas = FigureCanvasTkAgg(fig, frame)
+            canvas.get_tk_widget().pack(fill='both', expand=True)
+
+            toolbar = NavigationToolbar2Tk(canvas, frame)
+            toolbar.update()
+            toolbar.pack(side='bottom', fill='x')
+
+            for ax, (plot_title, x_label, y_label) in zip(axes, plot_specs):
+                self._format_empty_axis(ax, plot_title, x_label, y_label)
+
+            # Store references to the figure, canvas, and axes for later updates
+            self.figures[tab_key] = fig
+            self.canvases[tab_key] = canvas
+            self.axes[tab_key] = axes
+
+            canvas.draw()
         
-    def toggle_redraw_delay(self, *args):
-        if self.visible:
-            self.visible = False
-            self.widget.pack_forget()
-        if self.config_job:
-            self.widget.after_cancel(self.config_job)
-        self.config_job = self.widget.after(150, self.make_visible)
+        def update_plots(self, dataframe = None):
+            if dataframe is None or dataframe.empty:
+                self._draw_empty()
+                return
+            
+            # check if all required columns are present in the dataframe, if not, draw empty and return
+            required_columns = list(TEST_DATA_COLUMNS)
+            for col in required_columns:
+                if col not in dataframe.columns:
+                    print(f"Dataframe is missing required column: {col}")
+                    self._draw_empty()
+                    return
+
+            # frequency plots
+            freq_col = "Freq. [Hz]"
+            temp_col = f"Temp. [{CHAR_DEGC}]"
+            cp_col = "Cp [F]"
+            df_col = "Df [1]"
+            esr_col = f"ESR [{CHAR_OHM}]"
+            
+            freq_axes = self.axes["frequency"]
+            freq_specs = [
+                (freq_axes[0], dataframe[freq_col], dataframe[cp_col], "Capacitance vs Frequency", "Frequency [Hz]", "Cp [F]", "semilogx"),
+                (freq_axes[1], dataframe[freq_col], dataframe[df_col], "Dissipation Factor vs Frequency", "Frequency [Hz]", "Df [1]", "semilogx"),
+                (freq_axes[2], dataframe[freq_col], dataframe[esr_col], "ESR vs Frequency", "Frequency [Hz]", f"ESR [{CHAR_OHM}]", "semilogx"),
+            ]
+
+            for ax, x, y, title, xlabel, ylabel, mode in freq_specs:
+                ax.clear()
+                ax.set_title(title)
+                ax.set_xlabel(xlabel)
+                ax.set_ylabel(ylabel)
+                ax.grid(which='both')
+                if mode == "semilogx":
+                    ax.semilogx(x, y, marker='o', linestyle='-')
+                else:
+                    ax.plot(x, y, marker='o', linestyle='-')
+            
+            self.canvases["frequency"].draw()
+
+            # temperature plots
+            temp_axes = self.axes["temperature"]
+            temp_specs = [
+                (temp_axes[0], dataframe[temp_col], dataframe[cp_col], "Capacitance vs Temperature", f"Temperature [{CHAR_DEGC}]", "Cp [F]"),
+                (temp_axes[1], dataframe[temp_col], dataframe[df_col], "Dissipation Factor vs Temperature", f"Temperature [{CHAR_DEGC}]", "Df [1]"),
+                (temp_axes[2], dataframe[temp_col], dataframe[esr_col], "ESR vs Temperature", f"Temperature [{CHAR_DEGC}]", f"ESR [{CHAR_OHM}]"),
+            ]
         
-    def make_visible(self, *args):
-        self.visible = True
-        self.widget.pack(side='top', fill='both', expand=True)
-        
-    def update_plots(self, *args):
-        """ Function (callback viable) which will trigger a redraw of the plots"""
-        print("Updating plots...")
-        self.update_capacitance()
-        self.update_dissipation()
-    
-    # updates the capacitance plot based on the current frequencies and capacitance data, with proper formatting and labels
-    def update_capacitance(self, *args):
-        print("Updating Capacitance Plot...")
-        points = self.capacitance_data.get()
-        freqs = self.frequencies.get()
-        ax = self.capacitance_axes
-        ax.clear()
-        ax.set_title("Capacitance")
-        ax.set_xlabel("Frequency [Hz]")
-        ax.set_ylabel(r"$C_{p}$" + f" [{CHAR_MU}F]")
-        ax.grid(which='both')
-        if points:
-            ax.semilogx(freqs, points, marker='o', linestyle='-')
-        else:
-            ax.text(0.5, 0.5, "No Data", ha='center', va='center', transform=ax.transAxes)
-        ax.legend(["Probe 1", "Probe 2", "Probe 3", "Probe 4"], loc='lower center', bbox_to_anchor=(0.5, 1.05))
-        self.plot_canvas.draw()
-    
-    # same as update_capacitance but for dissipation data, with proper formatting and labels
-    def update_dissipation(self, *args):
-        print("Updating Dissipation Plot...")
-        points = self.dissipation_data.get()
-        freqs = self.frequencies.get()
-        ax = self.dissipation_axes
-        ax.clear()
-        ax.set_title("Dissipation Factor")
-        ax.set_xlabel("Frequency [Hz]")
-        ax.set_ylabel(r"$D_{f}$ [1]")
-        ax.grid(which='both')
-        if points:
-            ax.loglog(freqs, points, marker='o', linestyle='-')
-        else:
-            ax.text(0.5, 0.5, "No Data", ha='center', va='center', transform=ax.transAxes)
-        self.plot_canvas.draw()
+            for ax, x, y, title, xlabel, ylabel in temp_specs:
+                ax.clear()
+                ax.set_title(title)
+                ax.set_xlabel(xlabel)
+                ax.set_ylabel(ylabel)
+                ax.grid(which="both")
+                ax.plot(x, y, marker="o", linestyle="-")
+
+            self.canvases["temperature"].draw()
+
+        # if no data or missing columns, draw empty plot
+        def _draw_empty(self):
+            for tab_key, axes in self.axes.items():
+                for ax in axes:
+                    title = ax.get_title()
+                    xlabel = ax.get_xlabel()
+                    ylabel = ax.get_ylabel()
+                    self._format_empty_axis(ax, title, xlabel, ylabel)
+                self.canvases[tab_key].draw()
+
+        # helper function to format an axis as empty with a "No Data" message
+        def _format_empty_axis(self, ax, title, xlabel, ylabel):
+            ax.clear()
+            ax.set_title(title)
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.grid(which='both')
+            ax.text(
+                0.5,
+                0.5,
+                "No Data",
+                ha='center',
+                va='center',
+                transform=ax.transAxes
+            )
 
 # Main application class to hold all the state and functions for the app
 class App():
@@ -606,7 +649,7 @@ class App():
             show='headings',
             selectmode='none',
             height=8,
-            header_widths=[60, 130, 130, 130, 140],
+            header_widths=[40, 80, 80, 80, 80, 80],
             increment=False,
         )
         self.temp_step_table.pack(side='left', fill='both', expand=True)
@@ -867,7 +910,7 @@ class App():
             header_widths=[40,100],
             increment=True,
         )
-        self.custom_freq_table.pack(side='left', fill='y')
+        self.custom_freq_table.pack(side='left', fill='both', expand=True)
         custom_table_scrollbar = ttk.Scrollbar(
             master=custom_table_with_scroll_frame, 
             orient='vertical', 
@@ -895,7 +938,7 @@ class App():
             header_widths=[40,100,16],
             increment=True,
         )
-        self.freq_step_table.pack(side='left', fill='y')
+        self.freq_step_table.pack(side='left', fill='both', expand=True)
         full_table_scrollbar = ttk.Scrollbar(
             master=full_table_with_scroll_frame, 
             orient='vertical', 
@@ -1001,23 +1044,9 @@ class App():
 
     def build_data_plots(self, master):
         
-        test_plot = TestDataPlot(master)
-        test_plot.widget.pack(side='top', fill='both', expand=True)
-
-        test_plot.update_plots(self.test_data)
-        # master.bind("<Configure>", test_plot.toggle_redraw_delay)
-        def on_return(*args):
-            print("***RETURN PRESSED***")
-            data = []
-            for x in range(12):
-                data.append((x+1)*randint(1,10))
-            test_plot.capacitance_data.set(data)
-            test_plot.dissipation_data.set(data)
-            test_plot.frequencies.set([10, 30, 50, 70, 100, 300, 500, 700, 1000, 3000, 5000, 7000])
-            test_plot.update_plots(self.test_data)
-
-        test_plot.update_plots(self.test_data)
-        test_plot.widget.bind('<Return>', on_return)
+        self.test_plot = TestDataPlot(master)
+        self.test_plot.widget.pack(side="top", fill="both", expand=True)
+        self.test_plot.update_plots(self.test_data)
     # END build_data_plots()
 
     def build_test_management(self, master):
@@ -1132,11 +1161,11 @@ class App():
             show='headings',
             selectmode='none',
             height=16,
-            header_widths=[40,80,80,80,80]
-        ); data_table.pack(side='left', fill='y')
+            header_widths=[60, 60, 60, 60, 60, 60],
+        ); data_table.pack(side='left', fill='both', expand=True)
         scrollbar = ttk.Scrollbar(table_with_scroll_frame, orient='vertical', command=data_table.yview)
         data_table.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side='left', fill='y')
+        scrollbar.pack(side='left', fill='both', expand=True)
         self.padding(master, y=10, side='top')
         # Configure alternating row colors
         # data_table.tag_configure('evenrow', background='#E8E8E8')
